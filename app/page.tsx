@@ -1,6 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { db } from "@/lib/firebase";
+import {
+  collection,
+  addDoc,
+  getDocs,
+  deleteDoc,
+  doc,
+  updateDoc,
+  query,
+  orderBy
+} from "firebase/firestore";
 import {
   Table,
   TableBody,
@@ -33,74 +44,41 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Calendar } from "@/components/ui/calendar";
 import { format } from "date-fns";
 import { ptBR } from "date-fns/locale";
-import { CalendarIcon, Trash, Trash2 } from "lucide-react";
+import { CalendarIcon, Trash, Trash2, Pencil } from "lucide-react";
+import { toast } from "sonner";
 
 interface Expense {
-  id: number;
-  gasto: string;
+  id: string;
+  despesa: string;
   valor: number;
   categoria: string;
   data: string;
   descricao: string;
 }
 
-// Dados de exemplo
-const expenses: Expense[] = [
-  {
-    id: 1,
-    gasto: "Supermercado",
-    valor: 350.80,
-    categoria: "Alimentação",
-    data: "2025-12-15",
-    descricao: "Compras mensais no mercado",
-  },
-  {
-    id: 2,
-    gasto: "Conta de luz",
-    valor: 180.50,
-    categoria: "Moradia",
-    data: "2025-12-10",
-    descricao: "Fatura de energia elétrica",
-  },
-  {
-    id: 3,
-    gasto: "Netflix",
-    valor: 55.90,
-    categoria: "Entretenimento",
-    data: "2025-12-05",
-    descricao: "Assinatura mensal",
-  },
-  {
-    id: 4,
-    gasto: "Gasolina",
-    valor: 250.00,
-    categoria: "Transporte",
-    data: "2025-12-18",
-    descricao: "Abastecimento do veículo",
-  },
-  {
-    id: 5,
-    gasto: "Restaurante",
-    valor: 125.40,
-    categoria: "Alimentação",
-    data: "2025-12-20",
-    descricao: "Jantar com amigos",
-  },
-];
+interface Provento {
+  id: string;
+  valor: number;
+  periodo: string; // formato: "YYYY-MM"
+  descricao: string;
+}
 
-type SortField = "gasto" | "valor" | "categoria" | "data" | "descricao";
+type SortField = "despesa" | "valor" | "categoria" | "data" | "descricao";
 type SortDirection = "asc" | "desc" | null;
 
 export default function Home() {
-  const [selectedPeriod, setSelectedPeriod] = useState("2025-12");
+  const now = new Date();
+  const currentPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  const [selectedPeriod, setSelectedPeriod] = useState(currentPeriod);
   const [sortField, setSortField] = useState<SortField | null>(null);
   const [sortDirection, setSortDirection] = useState<SortDirection>(null);
-  const [expensesList, setExpensesList] = useState<Expense[]>(expenses);
-  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [expensesList, setExpensesList] = useState<Expense[]>([]);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
   const [formData, setFormData] = useState({
-    gasto: "",
+    despesa: "",
     valor: "",
     categoria: "",
     data: "",
@@ -118,8 +96,129 @@ export default function Home() {
   const [isAddCategoryDialogOpen, setIsAddCategoryDialogOpen] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState("");
   const [isManageCategoriesDialogOpen, setIsManageCategoriesDialogOpen] = useState(false);
+  const [proventosList, setProventosList] = useState<Provento[]>([]);
+  const [isProventosDialogOpen, setIsProventosDialogOpen] = useState(false);
+  const [proventoFormData, setProventoFormData] = useState({
+    valor: "",
+    descricao: "",
+  });
+  const [isConfirmDialogOpen, setIsConfirmDialogOpen] = useState(false);
+  const [confirmDialogData, setConfirmDialogData] = useState({
+    title: "",
+    message: "",
+    onConfirm: () => {},
+  });
 
-  const totalGastos = expensesList.reduce((acc, expense) => acc + expense.valor, 0);
+  // Carregar despesas do Firestore
+  useEffect(() => {
+    loadExpenses();
+    loadCategories();
+    loadProventos();
+  }, []);
+
+  const loadExpenses = async () => {
+    try {
+      setLoading(true);
+      const q = query(collection(db, "despesas"), orderBy("data", "desc"));
+      const querySnapshot = await getDocs(q);
+      const expensesData: Expense[] = [];
+      querySnapshot.forEach((doc) => {
+        expensesData.push({ id: doc.id, ...doc.data() } as Expense);
+      });
+      setExpensesList(expensesData);
+    } catch (error) {
+      console.error("Erro ao carregar despesas:", error);
+      toast.error("Erro ao carregar despesas. Tente novamente.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadCategories = async () => {
+    try {
+      const querySnapshot = await getDocs(collection(db, "categorias"));
+      const categoriesData: string[] = [];
+      querySnapshot.forEach((doc) => {
+        categoriesData.push(doc.data().nome);
+      });
+      if (categoriesData.length > 0) {
+        setCategories(categoriesData);
+      } else {
+        // Se não houver categorias, criar as padrões
+        const defaultCategories = [
+          "Alimentação",
+          "Moradia",
+          "Transporte",
+          "Entretenimento",
+          "Saúde",
+          "Educação",
+          "Outros",
+        ];
+        for (const category of defaultCategories) {
+          await addDoc(collection(db, "categorias"), { nome: category });
+        }
+        setCategories(defaultCategories);
+      }
+    } catch (error) {
+      console.error("Erro ao carregar categorias:", error);
+    }
+  };
+
+  const loadProventos = async () => {
+    try {
+      const querySnapshot = await getDocs(collection(db, "proventos"));
+      const proventosData: Provento[] = [];
+      querySnapshot.forEach((doc) => {
+        proventosData.push({ id: doc.id, ...doc.data() } as Provento);
+      });
+      setProventosList(proventosData);
+    } catch (error) {
+      console.error("Erro ao carregar proventos:", error);
+    }
+  };
+
+  // Filtrar despesas pelo período selecionado
+  const filteredExpenses = expensesList.filter((expense) => {
+    const expenseDate = new Date(expense.data + 'T00:00:00');
+    const expenseMonth = expenseDate.getMonth() + 1; // 1-12
+    const expenseYear = expenseDate.getFullYear();
+
+    const [selectedYear, selectedMonth] = selectedPeriod.split("-");
+
+    return expenseYear === parseInt(selectedYear) && expenseMonth === parseInt(selectedMonth);
+  });
+
+  // Calcular total apenas das despesas filtradas
+  const totalDespesas = filteredExpenses.reduce((acc, expense) => acc + expense.valor, 0);
+
+  // Calcular total de proventos do período selecionado
+  const proventoPeriodo = proventosList.find(p => p.periodo === selectedPeriod);
+  const totalProventos = proventoPeriodo ? proventoPeriodo.valor : 0;
+
+  // Calcular saldo (proventos - despesas)
+  const saldo = totalProventos - totalDespesas;
+
+  // Gerar lista de períodos disponíveis (mês atual + meses com despesas)
+  const getAvailablePeriods = () => {
+    const periods = new Set<string>();
+
+    // Adicionar mês atual
+    const now = new Date();
+    const currentPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    periods.add(currentPeriod);
+
+    // Adicionar meses que têm despesas
+    expensesList.forEach((expense) => {
+      const expenseDate = new Date(expense.data + 'T00:00:00');
+      const period = `${expenseDate.getFullYear()}-${String(expenseDate.getMonth() + 1).padStart(2, '0')}`;
+      periods.add(period);
+    });
+
+    // Converter para array e ordenar (mais recente primeiro)
+    return Array.from(periods).sort((a, b) => b.localeCompare(a));
+  };
+
+  const availablePeriods = getAvailablePeriods();
 
   const getMonthYear = (period: string) => {
     const [year, month] = period.split("-");
@@ -144,13 +243,13 @@ export default function Home() {
 
   const handleSelectAll = (checked: boolean) => {
     if (checked) {
-      setSelectedIds(expensesList.map(expense => expense.id));
+      setSelectedIds(filteredExpenses.map(expense => expense.id));
     } else {
       setSelectedIds([]);
     }
   };
 
-  const handleSelectOne = (id: number, checked: boolean) => {
+  const handleSelectOne = (id: string, checked: boolean) => {
     if (checked) {
       setSelectedIds([...selectedIds, id]);
     } else {
@@ -158,15 +257,41 @@ export default function Home() {
     }
   };
 
-  const handleDelete = () => {
-    setExpensesList(expensesList.filter(expense => !selectedIds.includes(expense.id)));
-    setSelectedIds([]);
+  const openConfirmDialog = (title: string, message: string, onConfirm: () => void) => {
+    setConfirmDialogData({ title, message, onConfirm });
+    setIsConfirmDialogOpen(true);
+  };
+
+  const handleConfirmAction = () => {
+    confirmDialogData.onConfirm();
+    setIsConfirmDialogOpen(false);
+  };
+
+  const handleDelete = async () => {
+    const count = selectedIds.length;
+    openConfirmDialog(
+      "Confirmar Exclusão",
+      `Tem certeza que deseja excluir ${count} despesa${count > 1 ? "s" : ""}? Esta ação não pode ser desfeita.`,
+      async () => {
+        try {
+          for (const id of selectedIds) {
+            await deleteDoc(doc(db, "despesas", id));
+          }
+          setExpensesList(expensesList.filter(expense => !selectedIds.includes(expense.id)));
+          setSelectedIds([]);
+          toast.success(`${count} despesa${count > 1 ? "s excluídas" : " excluída"} com sucesso!`);
+        } catch (error) {
+          console.error("Erro ao deletar despesas:", error);
+          toast.error("Erro ao deletar despesas. Tente novamente.");
+        }
+      }
+    );
   };
 
   const handleOpenAddDialog = () => {
     setEditingExpense(null);
     setFormData({
-      gasto: "",
+      despesa: "",
       valor: "",
       categoria: "",
       data: "",
@@ -180,7 +305,7 @@ export default function Home() {
     if (expense) {
       setEditingExpense(expense);
       setFormData({
-        gasto: expense.gasto,
+        despesa: expense.despesa,
         valor: expense.valor.toString(),
         categoria: expense.categoria,
         data: expense.data,
@@ -190,61 +315,95 @@ export default function Home() {
     }
   };
 
-  const handleSaveExpense = () => {
-    if (!formData.gasto || !formData.valor || !formData.categoria || !formData.data) {
-      alert("Por favor, preencha todos os campos obrigatórios.");
+  const handleSaveExpense = async () => {
+    if (!formData.despesa || !formData.valor || !formData.categoria || !formData.data) {
+      toast.error("Por favor, preencha todos os campos obrigatórios.");
       return;
     }
 
-    if (formData.gasto.length > 20) {
-      alert("O título deve ter no máximo 20 caracteres.");
+    if (formData.despesa.length > 20) {
+      toast.error("O título deve ter no máximo 20 caracteres.");
       return;
     }
 
     if (formData.descricao.length > 100) {
-      alert("A descrição deve ter no máximo 100 caracteres.");
+      toast.error("A descrição deve ter no máximo 100 caracteres.");
       return;
     }
 
-    if (editingExpense) {
-      // Editar
-      setExpensesList(expensesList.map(expense => 
-        expense.id === editingExpense.id
-          ? { ...expense, ...formData, valor: parseFloat(formData.valor) }
-          : expense
-      ));
-    } else {
-      // Adicionar
-      const newExpense: Expense = {
-        id: Math.max(...expensesList.map(e => e.id), 0) + 1,
-        gasto: formData.gasto,
-        valor: parseFloat(formData.valor),
-        categoria: formData.categoria,
-        data: formData.data,
-        descricao: formData.descricao,
-      };
-      setExpensesList([...expensesList, newExpense]);
-    }
+    const saveExpense = async () => {
+      try {
+        const expenseData = {
+          despesa: formData.despesa,
+          valor: parseFloat(formData.valor),
+          categoria: formData.categoria,
+          data: formData.data,
+          descricao: formData.descricao,
+        };
 
-    setIsDialogOpen(false);
-    setSelectedIds([]);
+        if (editingExpense) {
+          // Editar
+          await updateDoc(doc(db, "despesas", editingExpense.id), expenseData);
+          setExpensesList(expensesList.map(expense =>
+            expense.id === editingExpense.id
+              ? { ...expense, ...expenseData }
+              : expense
+          ));
+        } else {
+          // Adicionar
+          const docRef = await addDoc(collection(db, "despesas"), expenseData);
+          const newExpense: Expense = {
+            id: docRef.id,
+            ...expenseData,
+          };
+          setExpensesList([...expensesList, newExpense]);
+        }
+
+        setIsDialogOpen(false);
+        setSelectedIds([]);
+        toast.success(editingExpense ? "Despesa atualizada com sucesso!" : "Despesa adicionada com sucesso!");
+      } catch (error) {
+        console.error("Erro ao salvar despesa:", error);
+        toast.error("Erro ao salvar despesa. Tente novamente.");
+      }
+    };
+
+    // Se estiver editando, mostrar confirmação
+    if (editingExpense) {
+      openConfirmDialog(
+        "Confirmar Edição",
+        `Deseja salvar as alterações na despesa "${formData.despesa}"?`,
+        saveExpense
+      );
+    } else {
+      // Se estiver adicionando, salvar diretamente
+      await saveExpense();
+    }
   };
 
-  const handleAddCategory = () => {
+  const handleAddCategory = async () => {
     if (!newCategoryName.trim()) {
-      alert("Por favor, digite um nome para a categoria.");
+      toast.error("Por favor, digite um nome para a categoria.");
       return;
     }
 
     if (categories.includes(newCategoryName.trim())) {
-      alert("Esta categoria já existe.");
+      toast.error("Esta categoria já existe.");
       return;
     }
 
-    setCategories([...categories, newCategoryName.trim()]);
-    setFormData({ ...formData, categoria: newCategoryName.trim() });
-    setNewCategoryName("");
-    setIsAddCategoryDialogOpen(false);
+    try {
+      await addDoc(collection(db, "categorias"), { nome: newCategoryName.trim() });
+      setCategories([...categories, newCategoryName.trim()]);
+      setFormData({ ...formData, categoria: newCategoryName.trim() });
+      setNewCategoryName("");
+      setIsAddCategoryDialogOpen(false);
+      setIsManageCategoriesDialogOpen(false);
+      toast.success("Categoria adicionada com sucesso!");
+    } catch (error) {
+      console.error("Erro ao adicionar categoria:", error);
+      toast.error("Erro ao adicionar categoria. Tente novamente.");
+    }
   };
 
   const handleCategoryChange = (value: string) => {
@@ -255,25 +414,92 @@ export default function Home() {
     }
   };
 
-  const handleDeleteCategory = (categoryToDelete: string) => {
+  const handleDeleteCategory = async (categoryToDelete: string) => {
     const isInUse = expensesList.some(expense => expense.categoria === categoryToDelete);
-    
+
     if (isInUse) {
       const confirmDelete = window.confirm(
-        `A categoria "${categoryToDelete}" está sendo usada em ${expensesList.filter(e => e.categoria === categoryToDelete).length} gasto(s). Deseja realmente excluir? Os gastos associados não serão excluídos, mas ficarão sem categoria.`
+        `A categoria "${categoryToDelete}" está sendo usada em ${expensesList.filter(e => e.categoria === categoryToDelete).length} despesa(s). Deseja realmente excluir? As despesas associadas não serão excluídas, mas ficarão sem categoria.`
       );
       if (!confirmDelete) return;
     }
 
-    setCategories(categories.filter(cat => cat !== categoryToDelete));
-    
-    // Se a categoria sendo deletada é a que está selecionada no form, limpar a seleção
-    if (formData.categoria === categoryToDelete) {
-      setFormData({ ...formData, categoria: "" });
+    try {
+      // Encontrar e deletar o documento da categoria
+      const querySnapshot = await getDocs(collection(db, "categorias"));
+      querySnapshot.forEach(async (document) => {
+        if (document.data().nome === categoryToDelete) {
+          await deleteDoc(doc(db, "categorias", document.id));
+        }
+      });
+
+      setCategories(categories.filter(cat => cat !== categoryToDelete));
+
+      // Se a categoria sendo deletada é a que está selecionada no form, limpar a seleção
+      if (formData.categoria === categoryToDelete) {
+        setFormData({ ...formData, categoria: "" });
+      }
+      toast.success("Categoria excluída com sucesso!");
+    } catch (error) {
+      console.error("Erro ao deletar categoria:", error);
+      toast.error("Erro ao deletar categoria. Tente novamente.");
     }
   };
 
-  const sortedExpenses = [...expensesList].sort((a, b) => {
+  const handleOpenProventosDialog = () => {
+    const provento = proventosList.find(p => p.periodo === selectedPeriod);
+    if (provento) {
+      setProventoFormData({
+        valor: provento.valor.toString(),
+        descricao: provento.descricao,
+      });
+    } else {
+      setProventoFormData({
+        valor: "",
+        descricao: "",
+      });
+    }
+    setIsProventosDialogOpen(true);
+  };
+
+  const handleSaveProvento = async () => {
+    if (!proventoFormData.valor) {
+      toast.error("Por favor, preencha o valor.");
+      return;
+    }
+
+    try {
+      const proventoData = {
+        valor: parseFloat(proventoFormData.valor),
+        periodo: selectedPeriod,
+        descricao: proventoFormData.descricao,
+      };
+
+      const existingProvento = proventosList.find(p => p.periodo === selectedPeriod);
+
+      if (existingProvento) {
+        // Atualizar provento existente
+        await updateDoc(doc(db, "proventos", existingProvento.id), proventoData);
+        setProventosList(proventosList.map(p =>
+          p.id === existingProvento.id
+            ? { ...p, ...proventoData }
+            : p
+        ));
+      } else {
+        // Criar novo provento
+        const docRef = await addDoc(collection(db, "proventos"), proventoData);
+        setProventosList([...proventosList, { id: docRef.id, ...proventoData }]);
+      }
+
+      setIsProventosDialogOpen(false);
+      toast.success(existingProvento ? "Proventos atualizados com sucesso!" : "Proventos adicionados com sucesso!");
+    } catch (error) {
+      console.error("Erro ao salvar provento:", error);
+      toast.error("Erro ao salvar provento. Tente novamente.");
+    }
+  };
+
+  const sortedExpenses = [...filteredExpenses].sort((a, b) => {
     if (!sortField || !sortDirection) return 0;
 
     let comparison = 0;
@@ -281,9 +507,11 @@ export default function Home() {
     if (sortField === "valor") {
       comparison = a.valor - b.valor;
     } else if (sortField === "data") {
-      comparison = new Date(a.data).getTime() - new Date(b.data).getTime();
+      comparison = new Date(a.data + 'T00:00:00').getTime() - new Date(b.data + 'T00:00:00').getTime();
     } else {
-      comparison = a[sortField].localeCompare(b[sortField]);
+      const aValue = a[sortField] || "";
+      const bValue = b[sortField] || "";
+      comparison = aValue.toString().localeCompare(bValue.toString());
     }
 
     return sortDirection === "asc" ? comparison : -comparison;
@@ -315,44 +543,69 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-slate-950">
-      <div className="container mx-auto px-4 py-8">
+      <div className="container mx-auto px-4 xl:px-24 py-8">
         {/* Header */}
         <div className="mb-8">
           <h1 className="text-4xl font-bold text-slate-50 mb-2">
-            Controle Financeiro
+            Personal Finance
           </h1>
           <p className="text-slate-400">
-            Gerencie seus gastos de forma simples e eficiente
+            Gerencie suas despesas de forma simples e eficiente
           </p>
         </div>
 
         {/* Stats Card */}
-        <div className="bg-slate-800/50 rounded-lg shadow-sm p-6 mb-6 border border-slate-700">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-sm text-slate-400 mb-1">
-                Total de Gastos - Dezembro 2025
-              </p>
-              <p className="text-3xl font-bold text-slate-50">
-                R$ {totalGastos.toFixed(2).replace(".", ",")}
+        <div className="bg-slate-800/50 rounded-lg shadow-sm p-6 mb-6 border border-slate-700 flex justify-between">
+          <div className="flex gap-24">
+            {/* Proventos */}
+            <div className="flex flex-col">
+              <div className="flex items-center gap-2 mb-2">
+                <p className="text-sm text-slate-400">Proventos</p>
+                <button
+                  onClick={handleOpenProventosDialog}
+                  className="text-slate-400 hover:text-slate-50 transition-colors cursor-pointer"
+                  title={totalProventos > 0 ? "Editar proventos" : "Adicionar proventos"}
+                >
+                  <Pencil className="h-3 w-3" />
+                </button>
+              </div>
+              <p className="text-2xl font-bold text-green-400">
+                R$ {totalProventos.toFixed(2).replace(".", ",")}
               </p>
             </div>
-            <div className="bg-slate-800 rounded-full p-4">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-                strokeWidth={1.5}
-                stroke="currentColor"
-                className="w-8 h-8 text-slate-300"
-              >
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  d="M2.25 18.75a60.07 60.07 0 0115.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 013 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 00-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 01-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 003 15h-.75M15 10.5a3 3 0 11-6 0 3 3 0 016 0zm3 0h.008v.008H18V10.5zm-12 0h.008v.008H6V10.5z"
-                />
-              </svg>
+
+            {/* Despesas */}
+            <div className="flex flex-col">
+              <p className="text-sm text-slate-400 mb-2">Despesas</p>
+              <p className="text-2xl font-bold text-red-400">
+                R$ {totalDespesas.toFixed(2).replace(".", ",")}
+              </p>
             </div>
+
+            {/* Saldo */}
+            <div className="flex flex-col">
+              <p className="text-sm text-slate-400 mb-2">Saldo</p>
+              <p className={`text-2xl font-bold ${saldo >= 0 ? "text-blue-400" : "text-orange-400"
+                }`}>
+                R$ {saldo >= 0 ? "" : "-"}{Math.abs(saldo).toFixed(2).replace(".", ",")}
+              </p>
+            </div>
+          </div>
+          <div className="bg-slate-800 rounded-full p-4">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              strokeWidth={1.5}
+              stroke="currentColor"
+              className="w-8 h-8 text-slate-300"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M2.25 18.75a60.07 60.07 0 0115.797 2.101c.727.198 1.453-.342 1.453-1.096V18.75M3.75 4.5v.75A.75.75 0 013 6h-.75m0 0v-.375c0-.621.504-1.125 1.125-1.125H20.25M2.25 6v9m18-10.5v.75c0 .414.336.75.75.75h.75m-1.5-1.5h.375c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-.375m1.5-1.5H21a.75.75 0 00-.75.75v.75m0 0H3.75m0 0h-.375a1.125 1.125 0 01-1.125-1.125V15m1.5 1.5v-.75A.75.75 0 003 15h-.75M15 10.5a3 3 0 11-6 0 3 3 0 016 0zm3 0h.008v.008H18V10.5zm-12 0h.008v.008H6V10.5z"
+              />
+            </svg>
           </div>
         </div>
 
@@ -370,18 +623,15 @@ export default function Home() {
                   <SelectValue placeholder="Selecione o período" />
                 </SelectTrigger>
                 <SelectContent className="bg-slate-800 border-slate-700">
-                  <SelectItem value="2025-12" className="text-slate-200 focus:bg-slate-700 focus:text-slate-50">
-                    Dezembro 2025
-                  </SelectItem>
-                  <SelectItem value="2025-11" className="text-slate-200 focus:bg-slate-700 focus:text-slate-50">
-                    Novembro 2025
-                  </SelectItem>
-                  <SelectItem value="2025-10" className="text-slate-200 focus:bg-slate-700 focus:text-slate-50">
-                    Outubro 2025
-                  </SelectItem>
-                  <SelectItem value="2025-09" className="text-slate-200 focus:bg-slate-700 focus:text-slate-50">
-                    Setembro 2025
-                  </SelectItem>
+                  {availablePeriods.map((period) => (
+                    <SelectItem
+                      key={period}
+                      value={period}
+                      className="text-slate-200 focus:bg-slate-700 focus:text-slate-50"
+                    >
+                      {getMonthYear(period)}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -420,17 +670,17 @@ export default function Home() {
                 <TableRow>
                   <TableHead className="w-12 pl-6">
                     <Checkbox
-                      checked={selectedIds.length === expensesList.length && expensesList.length > 0}
+                      checked={selectedIds.length === filteredExpenses.length && filteredExpenses.length > 0}
                       onCheckedChange={handleSelectAll}
                     />
                   </TableHead>
                   <TableHead
                     className="font-semibold cursor-pointer hover:bg-slate-800/50 transition-colors"
-                    onClick={() => handleSort("gasto")}
+                    onClick={() => handleSort("despesa")}
                   >
                     <div className="flex items-center">
-                      Gasto
-                      <SortIcon field="gasto" />
+                      Despesa
+                      <SortIcon field="despesa" />
                     </div>
                   </TableHead>
                   <TableHead
@@ -481,7 +731,7 @@ export default function Home() {
                       />
                     </TableCell>
                     <TableCell className="font-medium py-4">
-                      {expense.gasto}
+                      {expense.despesa}
                     </TableCell>
                     <TableCell className="text-slate-50 font-semibold py-4">
                       R$ {expense.valor.toFixed(2).replace(".", ",")}
@@ -492,7 +742,7 @@ export default function Home() {
                       </span>
                     </TableCell>
                     <TableCell className="text-slate-400 py-4">
-                      {new Date(expense.data).toLocaleDateString("pt-BR")}
+                      {new Date(expense.data + 'T00:00:00').toLocaleDateString("pt-BR")}
                     </TableCell>
                     <TableCell className="text-slate-400 max-w-xs truncate py-4">
                       {expense.descricao}
@@ -502,6 +752,20 @@ export default function Home() {
               </TableBody>
             </Table>
           </div>
+          {loading && (
+            <div className="flex items-center justify-center py-8">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-slate-50"></div>
+            </div>
+          )}
+          {!loading && filteredExpenses.length === 0 && (
+            <div className="flex items-center justify-center py-8">
+              <p className="text-slate-400">
+                {expensesList.length === 0
+                  ? "Nenhuma despesa cadastrada. Clique em 'Adicionar' para começar."
+                  : "Nenhuma despesa encontrada neste período."}
+              </p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -509,23 +773,23 @@ export default function Home() {
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
         <DialogContent className="bg-slate-800 border-slate-700 text-slate-50">
           <DialogHeader>
-            <DialogTitle>{editingExpense ? "Editar Gasto" : "Adicionar Gasto"}</DialogTitle>
+            <DialogTitle>{editingExpense ? "Editar Despesa" : "Adicionar Despesa"}</DialogTitle>
             <DialogDescription className="text-slate-400">
-              {editingExpense ? "Edite as informações do gasto abaixo." : "Preencha as informações do novo gasto."}
+              {editingExpense ? "Edite as informações da despesa abaixo." : "Preencha as informações da nova despesa."}
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="grid gap-2">
-              <Label htmlFor="gasto">Título *</Label>
+              <Label htmlFor="despesa">Título *</Label>
               <Input
-                id="gasto"
-                value={formData.gasto}
-                onChange={(e) => setFormData({ ...formData, gasto: e.target.value })}
+                id="despesa"
+                value={formData.despesa}
+                onChange={(e) => setFormData({ ...formData, despesa: e.target.value })}
                 maxLength={20}
                 className="bg-slate-700 border-slate-600 text-slate-50"
                 placeholder="Ex: Supermercado"
               />
-              <span className="text-xs text-slate-500">{formData.gasto.length}/20 caracteres</span>
+              <span className="text-xs text-slate-500">{formData.despesa.length}/20 caracteres</span>
             </div>
             <div className="grid gap-2">
               <Label htmlFor="valor">Valor *</Label>
@@ -595,15 +859,15 @@ export default function Home() {
             </div>
           </div>
           <DialogFooter>
-            <Button 
-              variant="destructive" 
-              onClick={() => setIsDialogOpen(false)} 
+            <Button
+              variant="destructive"
+              onClick={() => setIsDialogOpen(false)}
               className="bg-slate-700 hover:bg-slate-600 border-slate-600 cursor-pointer"
             >
               Cancelar
             </Button>
-            <Button 
-              onClick={handleSaveExpense}  
+            <Button
+              onClick={handleSaveExpense}
               className="bg-slate-700 hover:bg-slate-600 border-slate-600 cursor-pointer"
               variant="outline"
             >
@@ -636,22 +900,105 @@ export default function Home() {
             </div>
           </div>
           <DialogFooter>
-            <Button 
+            <Button
               variant="destructive"
               onClick={() => {
                 setIsAddCategoryDialogOpen(false);
                 setNewCategoryName("");
-              }} 
+              }}
               className="bg-slate-700 hover:bg-slate-600 border-slate-600 cursor-pointer"
             >
               Cancelar
             </Button>
-            <Button 
-              onClick={handleAddCategory}  
+            <Button
+              onClick={handleAddCategory}
               className="bg-slate-700 hover:bg-slate-600 border-slate-600 cursor-pointer"
               variant="outline"
             >
               Adicionar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog de Proventos */}
+      <Dialog open={isProventosDialogOpen} onOpenChange={setIsProventosDialogOpen}>
+        <DialogContent className="bg-slate-800 border-slate-700 text-slate-50 sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Proventos de {getMonthYear(selectedPeriod)}</DialogTitle>
+            <DialogDescription className="text-slate-400">
+              Informe o total de proventos (salário, renda, etc.) deste mês.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label htmlFor="valorProvento">Valor Total *</Label>
+              <Input
+                id="valorProvento"
+                type="number"
+                step="0.01"
+                value={proventoFormData.valor}
+                onChange={(e) => setProventoFormData({ ...proventoFormData, valor: e.target.value })}
+                className="bg-slate-700 border-slate-600 text-slate-50"
+                placeholder="0.00"
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="descricaoProvento">Descrição</Label>
+              <Textarea
+                id="descricaoProvento"
+                value={proventoFormData.descricao}
+                onChange={(e) => setProventoFormData({ ...proventoFormData, descricao: e.target.value })}
+                maxLength={100}
+                className="bg-slate-700 border-slate-600 text-slate-50 resize-none"
+                placeholder="Ex: Salário, freelance, rendimentos..."
+                rows={3}
+              />
+              <span className="text-xs text-slate-500">{proventoFormData.descricao.length}/100 caracteres</span>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button
+              variant="destructive"
+              onClick={() => setIsProventosDialogOpen(false)}
+              className="bg-slate-700 hover:bg-slate-600 border-slate-600 cursor-pointer"
+            >
+              Cancelar
+            </Button>
+            <Button
+              onClick={handleSaveProvento}
+              className="bg-slate-700 hover:bg-slate-600 border-slate-600 cursor-pointer"
+              variant="outline"
+            >
+              Salvar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog de Confirmação */}
+      <Dialog open={isConfirmDialogOpen} onOpenChange={setIsConfirmDialogOpen}>
+        <DialogContent className="bg-slate-800 border-slate-700 text-slate-50 sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{confirmDialogData.title}</DialogTitle>
+            <DialogDescription className="text-slate-400">
+              {confirmDialogData.message}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setIsConfirmDialogOpen(false)}
+              className="bg-slate-700 hover:bg-slate-600 border-slate-600 cursor-pointer"
+            >
+              Cancelar
+            </Button>
+            <Button
+              onClick={handleConfirmAction}
+              variant="destructive"
+              className="bg-red-600 hover:bg-red-700 cursor-pointer"
+            >
+              Confirmar
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -690,34 +1037,34 @@ export default function Home() {
                 </Button>
               </div>
             </div>
-            
+
             {/* Lista de Categorias */}
             <div className="max-h-[300px] overflow-y-auto scrollbar-thin">
               <div className="space-y-2">
-              {categories.map((category) => {
-                const usageCount = expensesList.filter(e => e.categoria === category).length;
-                return (
-                  <div key={category} className="flex items-center justify-between p-3 bg-slate-700 rounded-lg border border-slate-600 w-[99%]">
-                    <div className="flex flex-col">
-                      <span className="text-slate-50 font-medium">{category}</span>
-                      {usageCount > 0 && (
-                        <span className="text-xs text-slate-400">Usado em {usageCount} gasto(s)</span>
-                      )}
+                {categories.map((category) => {
+                  const usageCount = expensesList.filter(e => e.categoria === category).length;
+                  return (
+                    <div key={category} className="flex items-center justify-between p-3 bg-slate-700 rounded-lg border border-slate-600 w-[99%]">
+                      <div className="flex flex-col">
+                        <span className="text-slate-50 font-medium">{category}</span>
+                        {usageCount > 0 && (
+                          <span className="text-xs text-slate-400">Usado em {usageCount} despesa(s)</span>
+                        )}
+                      </div>
+                      <Button
+                        onClick={() => handleDeleteCategory(category)}
+                        variant="destructive"
+                        size="sm"
+                        className="bg-red-600 hover:bg-red-700 h-8 cursor-pointer"
+                      >
+                        <Trash2 />
+                      </Button>
                     </div>
-                    <Button
-                      onClick={() => handleDeleteCategory(category)}
-                      variant="destructive"
-                      size="sm"
-                      className="bg-red-600 hover:bg-red-700 h-8 cursor-pointer"
-                    >
-                      <Trash2 />
-                    </Button>
-                  </div>
-                );
-              })}
-              {categories.length === 0 && (
-                <p className="text-slate-400 text-center py-8">Nenhuma categoria cadastrada.</p>
-              )}
+                  );
+                })}
+                {categories.length === 0 && (
+                  <p className="text-slate-400 text-center py-8">Nenhuma categoria cadastrada.</p>
+                )}
               </div>
             </div>
           </div>
